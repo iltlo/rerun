@@ -33,6 +33,28 @@ def is_recording_enabled(recording: RecordingStream | None) -> bool:
 LogSinkLike: TypeAlias = GrpcSink | GrpcServerSink | FileSink | BinaryStream
 
 
+def _port_in_use(port: int) -> bool:
+    """Whether something is already accepting TCP connections on `port`."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        try:
+            sock.connect(("127.0.0.1", port))
+        except OSError:
+            return False
+        return True
+
+
+def _free_port() -> int:
+    """An unused localhost TCP port."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def set_sinks(
     *sinks: LogSinkLike,
     default_blueprint: BlueprintLike | None = None,
@@ -553,6 +575,15 @@ def spawn(
             on_event(event)
 
     event_stream = listen(_handle)
+
+    # A viewer already bound to this port was not started with our event socket,
+    # so clicks in that window never come back. Start another viewer instead.
+    if _port_in_use(port):
+        port = _free_port()
+        logging.warning(
+            "A Rerun viewer is already running. Starting a new one on port %s so image clicks are received. Click that window.",
+            port,
+        )
 
     try:
         _spawn_viewer(

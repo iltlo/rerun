@@ -178,6 +178,29 @@ def test_spawn_returns_the_stream_and_injects_the_socket_path(
         close_listener()
 
 
+def test_spawn_starts_a_new_viewer_when_the_port_is_taken(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An existing viewer was not given our event socket, so clicks would be lost."""
+    from rerun import sinks
+
+    captured: dict[str, Any] = {}
+
+    def fake_spawn(**kwargs: Any) -> int:
+        captured.update(kwargs)
+        return 1
+
+    monkeypatch.setattr(rerun_bindings, "spawn", fake_spawn)
+    monkeypatch.setattr(sinks, "_port_in_use", lambda _port: True)
+    monkeypatch.setattr(sinks, "connect_grpc", lambda *args, **kwargs: None)
+    monkeypatch.delenv("_RERUN_TEST_FORCE_SAVE", raising=False)
+
+    rr.init("rerun_example_viewer_events_new_port", spawn=False)
+    assert rr.spawn(port=9876, connect=True) is None
+    from rerun._image_clicks import close_listener
+
+    close_listener()
+    assert captured["port"] != 9876
+
+
 def test_poll_image_click_reads_the_latest_pixel() -> None:
     reset_image_clicks()
     note_viewer_event(
