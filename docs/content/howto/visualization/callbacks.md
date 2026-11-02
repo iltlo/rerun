@@ -8,6 +8,9 @@ We support registering callbacks to Viewer events in these environments:
 
 - Web browsers, through our [JS package](../integrations/embed-web.md#callbacks)
 - Jupyter notebooks, through our [Notebook API](../integrations/embed-notebooks.md#reacting-to-events-in-the-viewer)
+- Native viewers spawned from Python. [`rerun.poll_image_click`](https://ref.rerun.io/docs/python/stable/common/initialization_functions/#rerun.poll_image_click)
+  returns the latest click on an image entity after [`rerun.spawn`](https://ref.rerun.io/docs/python/stable/common/initialization_functions/#rerun.spawn).
+  Pass `on_event` to that same call to receive every other Viewer event.
 
 For users extending the Viewer through the Rust [`re_viewer`](https://docs.rs/re_viewer/latest/re_viewer/) crate, there are two options:
 

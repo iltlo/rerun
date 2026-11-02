@@ -237,6 +237,19 @@ When persisted, the state will be stored at the following locations:
     #[clap(long)]
     screenshot_to: Option<std::path::PathBuf>,
 
+    /// Stream viewer events as newline-delimited JSON to a Unix-domain socket.
+    ///
+    /// The socket must already be listening, typically created by the host
+    /// process before spawning the viewer. Each line is a serialized
+    /// `ViewerEvent`, including `selection_change` payloads with pick positions,
+    /// so an external process can react to clicks in a view.
+    ///
+    /// The path can also be set with the `RERUN_EVENT_SOCKET` environment
+    /// variable, for SDKs that cannot pass extra CLI arguments.
+    #[cfg(all(feature = "native_viewer", unix))]
+    #[clap(long, value_name = "PATH")]
+    event_socket: Option<std::path::PathBuf>,
+
     /// This will host a web-viewer over HTTP, and a gRPC server,
     /// unless one or more URIs are provided that can be viewed directly in the web viewer.
     ///
@@ -936,6 +949,8 @@ fn should_relaunch_detached(args: &Args) -> bool {
         window_size: _,
         renderer: _,
         video_decoder: _,
+        #[cfg(all(feature = "native_viewer", unix))]
+            event_socket: _,
     } = args;
 
     *detach_process
@@ -1430,6 +1445,15 @@ fn native_startup_options_from_args(args: &Args) -> anyhow::Result<re_viewer::St
         Ok(hw_accell) => Some(hw_accell),
     });
 
+    #[cfg(unix)]
+    let on_event = event_socket_callback(
+        args.event_socket
+            .clone()
+            .or_else(|| std::env::var_os("RERUN_EVENT_SOCKET").map(Into::into)),
+    );
+    #[cfg(not(unix))]
+    let on_event = None;
+
     Ok(re_viewer::StartupOptions {
         hide_welcome_screen: args.hide_welcome_screen,
         detach_process: args.detach_process,
@@ -1451,9 +1475,94 @@ fn native_startup_options_from_args(args: &Args) -> anyhow::Result<re_viewer::St
         },
         force_wgpu_backend: args.renderer.clone(),
         video_decoder_hw_acceleration,
+        on_event,
 
         ..Default::default()
     })
+}
+
+/// Stream serialized [`re_viewer::ViewerEvent`]s to a Unix socket as NDJSON.
+///
+/// The host process is expected to listen before spawning the viewer. The
+/// connection is established lazily on the first event, and writes happen on a
+/// dedicated thread so a slow reader cannot stall the viewer.
+#[cfg(all(feature = "native_viewer", unix))]
+fn event_socket_callback(
+    path: Option<std::path::PathBuf>,
+) -> Option<re_viewer::ViewerEventCallback> {
+    use std::cell::RefCell;
+    use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
+
+    /// Events queued while the reader is slower than the viewer.
+    const QUEUE_LEN: usize = 1024;
+
+    let path = path?;
+    re_log::info!(
+        "Streaming viewer events as NDJSON\nSocket path: {}",
+        path.display()
+    );
+
+    let sender = RefCell::new(None::<SyncSender<String>>);
+    Some(std::rc::Rc::new(move |event| {
+        let line = match serde_json::to_string(&event) {
+            Ok(line) => line,
+            Err(err) => {
+                re_log::warn_once!("Failed to serialize a Viewer event: {err}");
+                return;
+            }
+        };
+
+        let mut sender = sender.borrow_mut();
+        if sender.is_none() {
+            let (tx, rx) = sync_channel(QUEUE_LEN);
+            let path = path.clone();
+            let spawned = std::thread::Builder::new()
+                .name("viewer-event-socket".to_owned())
+                .spawn(move || {
+                    use std::io::Write as _;
+                    use std::os::unix::net::UnixStream;
+
+                    let mut socket = match UnixStream::connect(&path) {
+                        Ok(socket) => socket,
+                        Err(err) => {
+                            re_log::warn_once!(
+                                "Failed to connect to the event socket: {err}\nSocket path: {}",
+                                path.display()
+                            );
+                            return;
+                        }
+                    };
+                    for line in rx {
+                        if let Err(err) = writeln!(socket, "{line}") {
+                            re_log::warn_once!(
+                                "Failed to write to the event socket: {err}\nSocket path: {}",
+                                path.display()
+                            );
+                            return;
+                        }
+                    }
+                });
+            if let Err(err) = spawned {
+                re_log::warn_once!("Failed to spawn the event socket writer: {err}");
+            }
+            *sender = Some(tx);
+        }
+
+        match sender
+            .as_ref()
+            .expect("the sender was just inserted")
+            .try_send(line)
+        {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                re_log::warn_once!("The event socket is backlogged; dropping a Viewer event");
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                // The reader went away; reconnect on the next event.
+                *sender = None;
+            }
+        }
+    }))
 }
 
 fn connect_to_existing_server(
@@ -2108,6 +2217,8 @@ fn record_cli_command_analytics(args: &Args, build_info: re_build_info::BuildInf
         new: _,
         headless: _,
         integration_test: _,
+        #[cfg(all(feature = "native_viewer", unix))]
+            event_socket: _,
     } = args;
 
     let (command, subcommand) = match command {
@@ -2427,5 +2538,84 @@ mod tests {
                 "unexpected relaunch for {cli_args:?}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detach_preserves_the_event_socket_arg() {
+        let raw_args = [
+            "rerun",
+            "--detach-process",
+            "--event-socket",
+            "/tmp/rerun-events.sock",
+        ]
+        .map(std::ffi::OsString::from);
+        let parent = Args::try_parse_from(raw_args.iter()).unwrap();
+        assert!(should_relaunch_detached(&parent));
+
+        let child = Args::try_parse_from(std::iter::chain(
+            std::iter::once(std::ffi::OsStr::new("rerun")),
+            detached_child_args(&raw_args),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            child.event_socket.as_deref(),
+            Some(std::path::Path::new("/tmp/rerun-events.sock"))
+        );
+        assert!(!should_relaunch_detached(&child));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn event_socket_streams_events_as_ndjson() {
+        use std::io::{BufRead as _, BufReader};
+        use std::os::unix::net::UnixListener;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let on_event = event_socket_callback(Some(path)).expect("event socket callback");
+        for kind in [
+            re_viewer::ViewerEventKind::Pause,
+            re_viewer::ViewerEventKind::Play,
+        ] {
+            on_event(re_viewer::ViewerEvent {
+                application_id: re_log_types::ApplicationId::try_new("test_app").unwrap(),
+                recording_id: "test_recording".into(),
+                segment_id: None,
+                kind,
+            });
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for the viewer event socket"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("failed to accept the viewer event socket: {err}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut lines = BufReader::new(stream).lines();
+
+        let first: serde_json::Value =
+            serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        let second: serde_json::Value =
+            serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+
+        assert_eq!(first["type"], "pause");
+        assert_eq!(second["type"], "play");
     }
 }

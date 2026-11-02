@@ -12,6 +12,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from .._event import (
+    ContainerSelectionItem as ContainerSelectionItem,
+    EntitySelectionItem as EntitySelectionItem,
+    PauseEvent as PauseEvent,
+    PlayEvent as PlayEvent,
+    RecordingOpenEvent as RecordingOpenEvent,
+    SelectionChangeEvent as SelectionChangeEvent,
+    SelectionItem as SelectionItem,
+    TimelineChangeEvent as TimelineChangeEvent,
+    TimeUpdateEvent as TimeUpdateEvent,
+    ViewerEvent as ViewerEvent,
+    ViewerEventStream as ViewerEventStream,
+    ViewSelectionItem as ViewSelectionItem,
+)
 from . import video as video
 from ._hdf5_reader import DatasetInfo as DatasetInfo, Hdf5Reader as Hdf5Reader
 from ._lerobot_reader import LeRobotReader as LeRobotReader

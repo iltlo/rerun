@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
     from rerun import AsComponents, BlueprintLike, ComponentColumn, DescribedComponentBatch as DescribedComponentBatch
+    from rerun._event import ViewerEvent, ViewerEventStream
     from rerun._memory import MemoryRecording
     from rerun.chunk import Chunk, ChunkStore, LazyChunkStream, LazyStore
     from rerun.chunk._chunk import DataframeLike
@@ -734,7 +735,8 @@ class RecordingStream:
         hide_welcome_screen: bool = False,
         detach_process: bool = True,
         default_blueprint: BlueprintLike | None = None,
-    ) -> None:
+        on_event: Callable[[ViewerEvent], None] | None = None,
+    ) -> ViewerEventStream | None:
         """
         Spawn a Rerun Viewer, listening on the given port.
 
@@ -759,17 +761,31 @@ class RecordingStream:
             already has an active blueprint, the new blueprint won't become active until the user
             clicks the "reset blueprint" button. If you want to activate the new blueprint
             immediately, instead use the [`rerun.RecordingStream.send_blueprint`][] API.
+        on_event:
+            Called with every [`ViewerEvent`][rerun.experimental.ViewerEvent] the viewer
+            produces, for example selections and clicks. The callback runs on a background
+            thread. Only supported on Unix.
+
+            Image clicks are recorded either way. Read the latest one with
+            [`rerun.poll_image_click`][].
+
+        Returns
+        -------
+        The [`ViewerEventStream`][rerun.experimental.ViewerEventStream] receiving events,
+        or `None` if `on_event` is not set. Call `close()` on it to stop receiving events.
+        Closing it also stops [`rerun.poll_image_click`][].
 
         """
 
         from .sinks import spawn
 
-        spawn(
+        return spawn(
             port=port,
             connect=connect,
             memory_limit=memory_limit,
             hide_welcome_screen=hide_welcome_screen,
             detach_process=detach_process,
+            on_event=on_event,
             default_blueprint=default_blueprint,
             recording=self,
         )

@@ -109,6 +109,7 @@ native_viewer = [
   "dep:re_viewer",
   "dep:re_crash_handler",
   "dep:re_viewer_mcp",
+  "dep:serde_json",
   "dep:url",
   "importers",
   "re_viewer?/agent_context",
@@ -252,6 +253,7 @@ rayon.workspace = true
 clap = { workspace = true, optional = true, features = ["derive"] }
 jiff = { workspace = true, optional = true }
 re_perf_telemetry = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 unindent = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 

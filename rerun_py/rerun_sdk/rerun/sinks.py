@@ -16,6 +16,9 @@ from ._spawn import _spawn_viewer
 
 if TYPE_CHECKING:
     import pathlib
+    from collections.abc import Callable
+
+    from rerun._event import ViewerEvent, ViewerEventStream
 
 
 # --- Sinks ---
@@ -472,7 +475,8 @@ def spawn(
     executable_path: str | None = None,
     default_blueprint: BlueprintLike | None = None,
     recording: RecordingStream | None = None,
-) -> None:
+    on_event: Callable[[ViewerEvent], None] | None = None,
+) -> ViewerEventStream | None:
     """
     Spawn a Rerun Viewer, listening on the given port.
 
@@ -521,26 +525,55 @@ def spawn(
         already has an active blueprint, the new blueprint won't become active until the user
         clicks the "reset blueprint" button. If you want to activate the new blueprint
         immediately, instead use the [`rerun.send_blueprint`][] API.
+    on_event:
+        Called with every [`ViewerEvent`][rerun.experimental.ViewerEvent] the viewer
+        produces, for example selections and clicks. The callback runs on a background
+        thread. Only supported on Unix.
+
+        Image clicks are recorded either way. Read the latest one with
+        [`rerun.poll_image_click`][].
+
+    Returns
+    -------
+    The [`ViewerEventStream`][rerun.experimental.ViewerEventStream] receiving events,
+    or `None` if `on_event` is not set. Call `close()` on it to stop receiving events.
+    Closing it also stops [`rerun.poll_image_click`][].
 
     """
 
     if not is_recording_enabled(recording):
         logging.warning("Rerun is disabled - spawn() call ignored.")
-        return
+        return None
 
-    _spawn_viewer(
-        port=port,
-        memory_limit=memory_limit,
-        server_memory_limit=server_memory_limit,
-        hide_welcome_screen=hide_welcome_screen,
-        detach_process=detach_process,
-        executable_name=executable_name,
-        executable_path=executable_path,
-    )
+    from ._image_clicks import close_listener, listen, note_viewer_event
 
-    if connect:
-        connect_grpc(
-            f"rerun+http://127.0.0.1:{port}/proxy",
-            recording=recording,  # NOLINT
-            default_blueprint=default_blueprint,
+    def _handle(event: ViewerEvent) -> None:
+        note_viewer_event(event)
+        if on_event is not None:
+            on_event(event)
+
+    event_stream = listen(_handle)
+
+    try:
+        _spawn_viewer(
+            port=port,
+            memory_limit=memory_limit,
+            server_memory_limit=server_memory_limit,
+            hide_welcome_screen=hide_welcome_screen,
+            detach_process=detach_process,
+            executable_name=executable_name,
+            executable_path=executable_path,
+            event_socket=event_stream.path,
         )
+
+        if connect:
+            connect_grpc(
+                f"rerun+http://127.0.0.1:{port}/proxy",
+                recording=recording,  # NOLINT
+                default_blueprint=default_blueprint,
+            )
+    except Exception:
+        close_listener()
+        raise
+
+    return event_stream if on_event is not None else None

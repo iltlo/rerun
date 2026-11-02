@@ -13,6 +13,7 @@ def _spawn_viewer(
     executable_name: str = "rerun",
     executable_path: str | None = None,
     headless: bool = False,
+    event_socket: str | os.PathLike[str] | None = None,
 ) -> int | None:
     """
     Internal helper to spawn a Rerun Viewer, listening on the given port.
@@ -58,6 +59,10 @@ def _spawn_viewer(
         logging data and request screenshots via
         [`rerun.experimental.ViewerClient.save_screenshot`][].
 
+    event_socket:
+        Unix socket to which the viewer should stream its events as NDJSON.
+        The socket must already be listening.
+
     """
 
     import rerun_bindings
@@ -66,6 +71,12 @@ def _spawn_viewer(
     # what, thus spawning a viewer is pointless (and probably not intended).
     if os.environ.get("_RERUN_TEST_FORCE_SAVE") is not None:
         return None
+
+    # Let the spawned rerun process know it's just an app (skips analytics opt-in etc.).
+    extra_env = [("RERUN_APP_ONLY", "true")]
+    if event_socket is not None:
+        extra_env.append(("RERUN_EVENT_SOCKET", os.fspath(event_socket)))
+
     return rerun_bindings.spawn(
         port=port,
         memory_limit=memory_limit,
@@ -74,7 +85,6 @@ def _spawn_viewer(
         detach_process=detach_process,
         executable_name=executable_name,
         executable_path=executable_path,
-        # Let the spawned rerun process know it's just an app (skips analytics opt-in etc.).
-        extra_env=[("RERUN_APP_ONLY", "true")],
+        extra_env=extra_env,
         headless=headless,
     )

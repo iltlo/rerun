@@ -82,7 +82,7 @@ pub mod blueprint;
 
 pub use app::{App, AppCore};
 pub(crate) use app_state::AppState;
-pub use event::{SelectionChangeItem, ViewerEvent, ViewerEventKind};
+pub use event::{SelectionChangeItem, ViewerEvent, ViewerEventCallback, ViewerEventKind};
 pub use external_memory::ExternalMemoryUser;
 pub use re_async::AsyncRuntimeHandle;
 pub use re_capabilities::MainThreadToken;

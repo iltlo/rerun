@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+import atexit
 import json
+import logging
+import os
+import shutil
+import socket
+import tempfile
+import threading
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from typing_extensions import deprecated
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+_log = logging.getLogger(__name__)
 
 # Type definitions based on `crates/top/re_viewer/src/event.rs`
 # NOTE: In Python, we need to update both the type definitions
@@ -237,3 +250,89 @@ def _viewer_event_from_json_str(json_str: str) -> ViewerEvent:
 
     else:
         raise ValueError(f"Unknown event type: '{event_type}'")
+
+
+class ViewerEventStream:
+    """
+    Events produced by a native viewer started by [`rerun.spawn`][].
+
+    The viewer writes each event it produces to the Unix socket at `path`; this
+    object listens for them and calls `on_event` on a background thread. The
+    socket listens before the viewer is spawned, and the viewer connects on its
+    first event.
+
+    Call [`close`][rerun.experimental.ViewerEventStream.close] to stop listening
+    and remove the socket. It is otherwise closed at interpreter exit.
+
+    Parameters
+    ----------
+    on_event:
+        Called with each [`ViewerEvent`][rerun.experimental.ViewerEvent] the
+        viewer produces, for example selections and clicks.
+
+    """
+
+    def __init__(self, on_event: Callable[[ViewerEvent], None]) -> None:
+        if os.name != "posix":
+            raise RuntimeError("Viewer event streaming requires a Unix platform")
+
+        self._on_event = on_event
+        self._stop = threading.Event()
+        self._dir = Path(tempfile.mkdtemp(prefix="rerun-viewer-events-"))
+        self.path = self._dir / "events.sock"
+        """Path of the Unix socket the viewer writes to."""
+
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.bind(str(self.path))
+        self._listener.listen(1)
+        # Short timeouts keep `close` responsive on both accept and recv.
+        self._listener.settimeout(0.2)
+
+        self._thread = threading.Thread(target=self._run, name="rerun-viewer-events", daemon=True)
+        self._thread.start()
+        atexit.register(self.close)
+
+    def close(self) -> None:
+        """Stop delivering events, stop the listener thread, and remove the socket."""
+        self._stop.set()
+        self._listener.close()
+        if self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)
+        shutil.rmtree(self._dir, ignore_errors=True)
+        atexit.unregister(self.close)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                connection, _ = self._listener.accept()
+            except (TimeoutError, OSError):
+                if self._stop.is_set():
+                    return
+                continue
+
+            with connection:
+                connection.settimeout(0.2)
+                buffered = b""
+                while not self._stop.is_set():
+                    try:
+                        chunk = connection.recv(65536)
+                    except TimeoutError:
+                        continue
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    buffered += chunk
+                    *lines, buffered = buffered.split(b"\n")
+                    for line in lines:
+                        self._dispatch(line)
+
+    def _dispatch(self, line: bytes) -> None:
+        try:
+            event = _viewer_event_from_json_str(line.decode())
+        except (UnicodeDecodeError, ValueError, KeyError):
+            return
+        try:
+            self._on_event(event)
+        except Exception:
+            _log.exception("Viewer event callback failed")

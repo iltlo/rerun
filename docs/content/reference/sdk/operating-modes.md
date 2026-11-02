@@ -27,7 +27,7 @@ This is the default behavior you get when running all of our C++/Python/Rust exa
 `RecordingStream::spawn` spawns a new Rerun Viewer process using an executable available in your PATH, then streams all the data to it via gRPC. If an external Viewer was already running, `spawn` will connect to that one instead of spawning a new one.
 
 #### Python
-Call [`rr.spawn`](https://ref.rerun.io/docs/python/stable/common/initialization_functions/#rerun.spawn) once at the start of your program to start a Rerun Viewer in an external process and stream all the data to it via gRPC. If an external Viewer was already running, `spawn` will connect to that one instead of spawning a new one.
+Call [`rr.spawn`](https://ref.rerun.io/docs/python/stable/common/initialization_functions/#rerun.spawn) once at the start of your program to start a Rerun Viewer in an external process and stream all the data to it via gRPC. If an external Viewer was already running, `spawn` will connect to that one instead of spawning a new one. A click on an image is then available as integer pixels from [`rr.poll_image_click`](https://ref.rerun.io/docs/python/stable/common/initialization_functions/#rerun.poll_image_click). Pass `on_event=` to receive every Viewer event, such as play and pause, as a typed object.
 
 #### Rust
 [`RecordingStream::spawn`](https://docs.rs/rerun/latest/rerun/struct.RecordingStream.html#method.spawn) spawns a new Rerun Viewer process using an executable available in your PATH, then streams all the data to it via gRPC. If an external Viewer was already running, `spawn` will connect to that one instead of spawning a new one.
